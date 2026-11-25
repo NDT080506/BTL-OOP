@@ -1,4 +1,4 @@
-# Web thuê gia sư online
+# Web thuê gia sư online và mua khóa học
 
 Ứng dụng web kết nối học viên với gia sư. Project gồm:
 
