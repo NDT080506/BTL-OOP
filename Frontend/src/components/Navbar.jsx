@@ -1,0 +1,806 @@
+import React, { useState, useRef, useEffect } from 'react';
+import {
+  Search,
+  ShoppingCart,
+  Heart,
+  Bell,
+  Globe,
+  Menu,
+  ChevronDown,
+  GraduationCap,
+  BookOpen,
+  User,
+  LogOut,
+  X,
+  MessageCircle,
+  ShieldCheck,
+  Wallet,
+  ArrowRight
+} from 'lucide-react';
+import { categories } from '../data/categories';
+
+function removeVietnameseTones(str) {
+  if (!str) return '';
+  str = String(str).toLowerCase();
+  str = str.replace(/à|á|ạ|ả|ã|â|ầ|ấ|ậ|ẩ|ẫ|ă|ằ|ắ|ặ|ẳ|ẵ/g, 'a');
+  str = str.replace(/è|é|ẹ|ẻ|ẽ|ê|ề|ế|ệ|ể|ễ/g, 'e');
+  str = str.replace(/ì|í|ị|ỉ|ĩ/g, 'i');
+  str = str.replace(/ò|ó|ọ|ỏ|õ|ô|ồ|ố|ộ|ổ|ỗ|ơ|ờ|ớ|ợ|ở|ỡ/g, 'o');
+  str = str.replace(/ù|ú|ụ|ủ|ũ|ư|ừ|ứ|ự|ử|ữ/g, 'u');
+  str = str.replace(/ỳ|ý|ỵ|ỷ|ỹ/g, 'y');
+  str = str.replace(/đ/g, 'd');
+  str = str.replace(/\u0300|\u0301|\u0303|\u0309|\u0323/g, '');
+  str = str.replace(/\u02C6|\u0306|\u031B/g, '');
+  return str.trim();
+}
+
+export default function Navbar({
+  onOpenAuth,
+  onSearch,
+  cartCount = 0,
+  wishlistCount = 0,
+  currentUser,
+  onLogout,
+  notificationCount = 0,
+  conversationCount = 0,
+  onOpenBookings,
+  onOpenCart,
+  onOpenWishlist,
+  onOpenConversations,
+  onOpenAdmin,
+  onOpenTutorPortal,
+  userWallet,
+  onOpenWallet,
+  courses = [],
+  tutors = [],
+  onSelectCourse = null,
+  onSelectTutor = null,
+  onOpenTutorApplication = null
+}) {
+  const [searchTerm, setSearchTerm] = useState('');
+  const [showCategories, setShowCategories] = useState(false);
+  const [isSearchFocused, setIsSearchFocused] = useState(false);
+  const [showSearchDropdown, setShowSearchDropdown] = useState(false);
+  const [showUserMenu, setShowUserMenu] = useState(false);
+
+  const formatCompactVND = (val) => {
+    if (!val) return '0 ₫';
+    if (val >= 1000000000) return `${(val / 1000000000).toFixed(1)}B ₫`;
+    if (val >= 1000000) return `${(val / 1000000).toFixed(val % 1000000 === 0 ? 0 : 1)}M ₫`;
+    if (val >= 1000) return `${(val / 1000).toFixed(0)}k ₫`;
+    return `${val} ₫`;
+  };
+
+  const categoriesRef = useRef(null);
+  const userMenuRef = useRef(null);
+  const searchContainerRef = useRef(null);
+  const categoriesTimeoutRef = useRef(null);
+  const userMenuTimeoutRef = useRef(null);
+
+  const cleanTerm = removeVietnameseTones(searchTerm);
+
+  const matchingCourses = cleanTerm
+    ? (courses || []).filter(c =>
+      removeVietnameseTones(c.title).includes(cleanTerm) ||
+      removeVietnameseTones(c.instructor).includes(cleanTerm) ||
+      removeVietnameseTones(c.category).includes(cleanTerm) ||
+      (c.highlights && c.highlights.some(h => removeVietnameseTones(h).includes(cleanTerm)))
+    ).slice(0, 5)
+    : [];
+
+  const matchingTutors = cleanTerm
+    ? (tutors || []).filter(t =>
+      removeVietnameseTones(t.name).includes(cleanTerm) ||
+      removeVietnameseTones(t.title).includes(cleanTerm) ||
+      removeVietnameseTones(t.degree).includes(cleanTerm)
+    ).slice(0, 4)
+    : [];
+
+  const handleCategoriesEnter = () => {
+    if (categoriesTimeoutRef.current) clearTimeout(categoriesTimeoutRef.current);
+    setShowCategories(true);
+  };
+
+  const handleCategoriesLeave = () => {
+    categoriesTimeoutRef.current = setTimeout(() => {
+      setShowCategories(false);
+    }, 200);
+  };
+
+  const handleCategoriesToggle = (e) => {
+    e.preventDefault();
+    if (categoriesTimeoutRef.current) clearTimeout(categoriesTimeoutRef.current);
+    setShowCategories((prev) => !prev);
+  };
+
+  const handleUserMenuEnter = () => {
+    if (userMenuTimeoutRef.current) clearTimeout(userMenuTimeoutRef.current);
+    setShowUserMenu(true);
+  };
+
+  const handleUserMenuLeave = () => {
+    userMenuTimeoutRef.current = setTimeout(() => {
+      setShowUserMenu(false);
+    }, 200);
+  };
+
+  const handleUserMenuToggle = (e) => {
+    e.preventDefault();
+    if (userMenuTimeoutRef.current) clearTimeout(userMenuTimeoutRef.current);
+    setShowUserMenu((prev) => !prev);
+  };
+
+  useEffect(() => {
+    const handleClickOutside = (event) => {
+      if (categoriesRef.current && !categoriesRef.current.contains(event.target)) {
+        setShowCategories(false);
+      }
+      if (userMenuRef.current && !userMenuRef.current.contains(event.target)) {
+        setShowUserMenu(false);
+      }
+      if (searchContainerRef.current && !searchContainerRef.current.contains(event.target)) {
+        setShowSearchDropdown(false);
+      }
+    };
+    const handleScroll = () => {
+      setShowCategories(false);
+      setShowUserMenu(false);
+      setShowSearchDropdown(false);
+    };
+
+    document.addEventListener('mousedown', handleClickOutside);
+    window.addEventListener('scroll', handleScroll, { passive: true });
+    return () => {
+      document.removeEventListener('mousedown', handleClickOutside);
+      window.removeEventListener('scroll', handleScroll);
+      if (categoriesTimeoutRef.current) clearTimeout(categoriesTimeoutRef.current);
+      if (userMenuTimeoutRef.current) clearTimeout(userMenuTimeoutRef.current);
+    };
+  }, []);
+
+  const handleSearchSubmit = (e) => {
+    e.preventDefault();
+    setShowSearchDropdown(false);
+    if (onSearch) onSearch(searchTerm);
+  };
+
+  return (
+    <header className="ud-navbar-wrapper">
+      {/* Main Navbar */}
+      <nav className="ud-navbar">
+        <div className="container ud-navbar-inner">
+          {/* Logo */}
+          <a href="#" className="ud-logo">
+            <div className="ud-logo-icon">
+              <GraduationCap size={28} />
+            </div>
+            <span className="ud-logo-text">Edu<span>Tutor</span></span>
+          </a>
+
+          {/* Categories Button with Dropdown */}
+          <div
+            ref={categoriesRef}
+            className="ud-categories-wrapper"
+            onMouseEnter={handleCategoriesEnter}
+            onMouseLeave={handleCategoriesLeave}
+          >
+            <button
+              className="ud-nav-link ud-categories-btn"
+              onClick={handleCategoriesToggle}
+            >
+              <span>Khám phá</span>
+              <ChevronDown size={16} />
+            </button>
+
+            {showCategories && (
+              <div
+                className="ud-categories-dropdown animate-fade-in"
+                onMouseEnter={handleCategoriesEnter}
+                onMouseLeave={handleCategoriesLeave}
+              >
+                <div className="ud-cat-header">Danh mục đào tạo & gia sư</div>
+                <div className="ud-cat-list">
+                  {categories.map((cat) => (
+                    <a
+                      key={cat.id}
+                      href={`#category-${cat.id}`}
+                      className="ud-cat-item"
+                      onClick={() => setShowCategories(false)}
+                    >
+                      <BookOpen size={16} className="cat-icon" />
+                      <div className="cat-info">
+                        <span className="cat-name">{cat.name}</span>
+                      </div>
+                    </a>
+                  ))}
+                </div>
+              </div>
+            )}
+          </div>
+
+          {/* Search bar with Live Dropdown */}
+            <div
+              ref={searchContainerRef}
+              className="ud-navbar-search"
+            >  
+              <form
+                  className={`ud-search-form ${isSearchFocused ? 'focused' : ''}`}
+                  onSubmit={handleSearchSubmit}
+              >
+                <Search size={18} className="ud-search-icon" />
+                <input
+                  type="text"
+                  placeholder="Tìm kiếm môn học, khóa học..."
+                  value={searchTerm}
+                  onChange={(e) => {
+                    setSearchTerm(e.target.value);
+                    setShowSearchDropdown(true);
+                    if (onSearch && e.target.value.trim().length === 0) {
+                      onSearch('');
+                    }
+                  }}
+                  onFocus={() => {
+                    setIsSearchFocused(true);
+                    if (searchTerm.trim()) setShowSearchDropdown(true);
+                  }}
+                  onBlur={() => setIsSearchFocused(false)}
+                />
+                {searchTerm && (
+                  <button
+                    type="button"
+                    className="ud-search-clear"
+                    onClick={() => {
+                      setSearchTerm('');
+                      setShowSearchDropdown(false);
+                      if (onSearch) onSearch('');
+                    }}
+                  >
+                    <X size={16} />
+                  </button>
+                )}
+              </form>
+
+              {/* Live Search Results Dropdown */}
+              {showSearchDropdown && searchTerm.trim().length > 0 && (
+                <div
+                  className="ud-search-dropdown animate-fade-in"
+                  style={{
+                    position: 'absolute',
+                    top: 'calc(100% + 8px)',
+                    left: 0,
+                    width: 'max(100%, 460px)',
+                    maxWidth: 'min(540px, calc(100vw - 32px))',
+                    background: '#ffffff',
+                    borderRadius: 12,
+                    boxShadow: '0 16px 40px rgba(0, 0, 0, 0.16)',
+                    border: '1px solid #e2e8f0',
+                    zIndex: 1000,
+                    maxHeight: 520,
+                    overflowY: 'auto',
+                    overflowX: 'hidden'
+                  }}
+                >
+                  {/* Matching Courses */}
+                  {matchingCourses.length > 0 && (
+                    <div style={{ padding: '10px 0 4px', borderBottom: matchingTutors.length > 0 ? '1px solid #f1f5f9' : 'none' }}>
+                      <div style={{ padding: '0 16px 8px', fontSize: '0.74rem', fontWeight: 700, color: '#64748b', textTransform: 'uppercase', letterSpacing: 0.5, display: 'flex', alignItems: 'center', gap: 6, whiteSpace: 'nowrap' }}>
+                        <BookOpen size={14} color="#a435f0" />
+                        <span>Khóa học phù hợp ({matchingCourses.length})</span>
+                      </div>
+                      {matchingCourses.map((c) => (
+                        <div
+                          key={c.id}
+                          onClick={() => {
+                            if (onSelectCourse) onSelectCourse(c);
+                            setShowSearchDropdown(false);
+                            setSearchTerm('');
+                          }}
+                          style={{
+                            padding: '10px 16px',
+                            display: 'flex',
+                            alignItems: 'center',
+                            gap: 12,
+                            cursor: 'pointer',
+                            transition: 'background 0.15s ease'
+                          }}
+                          onMouseEnter={(e) => e.currentTarget.style.background = '#f8fafc'}
+                          onMouseLeave={(e) => e.currentTarget.style.background = '#ffffff'}
+                        >
+                          {c.thumbnail && (
+                            <img
+                              src={c.thumbnail}
+                              alt={c.title}
+                              style={{ width: 52, height: 36, borderRadius: 6, objectFit: 'cover', flexShrink: 0 }}
+                            />
+                          )}
+                          <div style={{ flex: 1, minWidth: 0 }}>
+                            <div style={{ fontSize: '0.88rem', fontWeight: 600, color: '#1c1d1f', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                              {c.title}
+                            </div>
+                            <div style={{ fontSize: '0.76rem', color: '#64748b', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                              {c.instructor && `Giảng viên: ${c.instructor}`}
+                            </div>
+                          </div>
+                          <div style={{ fontSize: '0.86rem', fontWeight: 700, color: '#a435f0', flexShrink: 0, whiteSpace: 'nowrap' }}>
+                            {c.price != null
+                              ? new Intl.NumberFormat('vi-VN', { style: 'currency', currency: 'VND' }).format(c.price)
+                              : 'Chưa cập nhật học phí'}
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+
+                  {/* Matching Tutors */}
+                  {matchingTutors.length > 0 && (
+                    <div style={{ padding: '10px 0 4px' }}>
+                      <div style={{ padding: '0 16px 8px', fontSize: '0.74rem', fontWeight: 700, color: '#64748b', textTransform: 'uppercase', letterSpacing: 0.5, display: 'flex', alignItems: 'center', gap: 6, whiteSpace: 'nowrap' }}>
+                        <GraduationCap size={14} color="#0d6832" />
+                        <span>Gia sư 1-1 ({matchingTutors.length})</span>
+                      </div>
+                      {matchingTutors.map((t) => (
+                        <div
+                          key={t.id}
+                          onClick={() => {
+                            if (onSelectTutor) onSelectTutor(t);
+                            setShowSearchDropdown(false);
+                            setSearchTerm('');
+                          }}
+                          style={{
+                            padding: '10px 16px',
+                            display: 'flex',
+                            alignItems: 'center',
+                            gap: 12,
+                            cursor: 'pointer',
+                            transition: 'background 0.15s ease'
+                          }}
+                          onMouseEnter={(e) => e.currentTarget.style.background = '#f8fafc'}
+                          onMouseLeave={(e) => e.currentTarget.style.background = '#ffffff'}
+                        >
+                          {t.avatar ? (
+                            <img
+                              src={t.avatar}
+                              alt={t.name}
+                              style={{ width: 40, height: 40, borderRadius: '50%', objectFit: 'cover', flexShrink: 0, border: '2px solid #a435f0' }}
+                            />
+                          ) : (
+                            <span aria-label={t.name} style={{ width: 40, height: 40, borderRadius: '50%', flexShrink: 0, display: 'flex', alignItems: 'center', justifyContent: 'center', background: '#ede9fe', color: '#6d28d9', fontWeight: 700 }}>
+                              {t.name?.charAt(0) || '?'}
+                            </span>
+                          )}
+                          <div style={{ flex: 1, minWidth: 0 }}>
+                            <div style={{ fontSize: '0.88rem', fontWeight: 600, color: '#1c1d1f', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                              {t.name}
+                            </div>
+                            <div style={{ fontSize: '0.76rem', color: '#64748b', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                              {[t.title, t.degree].filter(Boolean).join(' • ')}
+                            </div>
+                          </div>
+                          {t.rating != null && (
+                            <div style={{ fontSize: '0.8rem', color: '#b4690e', fontWeight: 700, flexShrink: 0, whiteSpace: 'nowrap' }}>
+                              ★ {Number(t.rating).toFixed(1)}
+                            </div>
+                          )}
+                        </div>
+                      ))}
+                    </div>
+                  )}
+
+                  {/* Empty State */}
+                  {matchingCourses.length === 0 && matchingTutors.length === 0 && (
+                    <div style={{ padding: '28px 16px', textAlign: 'center', color: '#64748b' }}>
+                      <Search size={32} color="#94a3b8" style={{ margin: '0 auto 8px', opacity: 0.7 }} />
+                      <p style={{ margin: 0, fontSize: '0.92rem', fontWeight: 600, color: '#1e293b' }}>
+                        Không tìm thấy kết quả nào cho "{searchTerm}"
+                      </p>
+                      <span style={{ fontSize: '0.78rem', color: '#94a3b8', marginTop: 4, display: 'block' }}>
+                        Thử tìm theo môn như "Toán", "Lý", "Java", "IELTS" hoặc tên gia sư
+                      </span>
+                    </div>
+                  )}
+
+                  {/* Footer CTA */}
+                  {(matchingCourses.length > 0 || matchingTutors.length > 0) && (
+                    <div
+                      onClick={() => {
+                        if (onSearch) onSearch(searchTerm);
+                        setShowSearchDropdown(false);
+                      }}
+                      style={{
+                        padding: '12px 16px',
+                        background: '#f8fafc',
+                        borderTop: '1px solid #f1f5f9',
+                        textAlign: 'center',
+                        fontSize: '0.85rem',
+                        fontWeight: 600,
+                        color: '#2563eb',
+                        cursor: 'pointer',
+                        display: 'flex',
+                        alignItems: 'center',
+                        justifyContent: 'center',
+                        gap: 6,
+                        whiteSpace: 'nowrap'
+                      }}
+                    >
+                      <span>Lọc và xem tất cả kết quả cho "{searchTerm}"</span>
+                      <ArrowRight size={14} />
+                    </div>
+                  )}
+                </div>
+              )}
+            </div>
+
+            {/* Navigation Links */}
+            <div className="ud-nav-actions">
+              <a href="#tutors" className="ud-nav-link hide-mobile">
+                Gia sư 1-1
+              </a>
+              <a href="#courses" className="ud-nav-link hide-mobile">
+                Khóa học
+              </a>
+              <a href="#articles" className="ud-nav-link hide-laptop">
+                Diễn đàn
+              </a>
+              <a
+                href="#become-tutor"
+                className="ud-nav-link ud-tutor-cta hide-laptop"
+                onClick={(e) => {
+                  e.preventDefault();
+                  if (onOpenTutorApplication) onOpenTutorApplication();
+                }}
+              >
+                Trở thành Gia sư
+              </a>
+
+              {/* Icon buttons */}
+              <div className="ud-icon-buttons">
+                {currentUser && (
+                  <button
+                    className="ud-wallet-btn"
+                    title={`Ví EduTutor - Số dư: ${new Intl.NumberFormat('vi-VN', { style: 'currency', currency: 'VND' }).format(userWallet?.availableBalance || 0)} (Bấm để nạp/xem chi tiết)`}
+                    onClick={onOpenWallet}
+                    style={{
+                      display: 'flex',
+                      alignItems: 'center',
+                      gap: 6,
+                      padding: '5px 10px',
+                      borderRadius: 20,
+                      background: '#eff6ff',
+                      border: '1px solid #bfdbfe',
+                      color: '#1d4ed8',
+                      fontSize: '0.82rem',
+                      fontWeight: 700,
+                      cursor: 'pointer',
+                      whiteSpace: 'nowrap',
+                      flexShrink: 0
+                    }}
+                  >
+                    <Wallet size={15} color="#2563eb" />
+                    <span>{new Intl.NumberFormat('vi-VN', { style: 'currency', currency: 'VND' }).format(userWallet?.availableBalance || 0)}</span>
+                  </button>
+                )}
+                <button
+                  className="ud-icon-btn hide-tablet"
+                  title="Danh sách yêu thích"
+                  onClick={() => {
+                    if (onOpenWishlist) onOpenWishlist();
+                    else if (!currentUser && onOpenAuth) onOpenAuth('login');
+                  }}
+                >
+                  <Heart size={20} fill={wishlistCount > 0 ? '#db2777' : 'none'} color={wishlistCount > 0 ? '#db2777' : 'currentColor'} />
+                  {wishlistCount > 0 && <span className="ud-badge-count" style={{ background: '#db2777' }}>{wishlistCount}</span>}
+                </button>
+
+                <button
+                  className="ud-icon-btn"
+                  title="Giỏ hàng"
+                  onClick={() => {
+                    if (onOpenCart) onOpenCart();
+                    else if (!currentUser && onOpenAuth) onOpenAuth('login');
+                  }}
+                >
+                  <ShoppingCart size={20} color={cartCount > 0 ? '#a435f0' : 'currentColor'} />
+                  {cartCount > 0 && <span className="ud-badge-count">{cartCount}</span>}
+                </button>
+
+                {/* Messenger / Tin nhắn icon */}
+                <button
+                  className="ud-icon-btn"
+                  title={conversationCount > 0 ? `Tin nhắn (${conversationCount} cuộc trò chuyện)` : "Tin nhắn & Trò chuyện"}
+                  onClick={() => {
+                    if (onOpenConversations) onOpenConversations();
+                    else if (!currentUser && onOpenAuth) onOpenAuth('login');
+                  }}
+                  style={{ position: 'relative' }}
+                >
+                  <MessageCircle size={20} color={conversationCount > 0 ? '#a435f0' : 'currentColor'} />
+                  {conversationCount > 0 && (
+                    <span
+                      className="ud-badge-count"
+                      style={{ backgroundColor: '#a435f0', color: '#fff' }}
+                    >
+                      {conversationCount}
+                    </span>
+                  )}
+                </button>
+
+                <button
+                  className="ud-icon-btn"
+                  title={notificationCount > 0 ? `Bạn có ${notificationCount} thông báo mới!` : "Thông báo"}
+                  onClick={() => {
+                    if (onOpenBookings) onOpenBookings();
+                    else if (!currentUser && onOpenAuth) onOpenAuth('login');
+                  }}
+                  style={{ position: 'relative' }}
+                >
+                  <Bell size={20} color={notificationCount > 0 ? '#a435f0' : 'currentColor'} />
+                  {notificationCount > 0 && (
+                    <span
+                      className="ud-badge-count"
+                      style={{ backgroundColor: '#a435f0', color: '#fff', animation: 'pulse 2s infinite' }}
+                    >
+                      {notificationCount}
+                    </span>
+                  )}
+                </button>
+              </div>
+
+              {/* Admin Portal Button - Only visible for ADMIN */}
+              {currentUser?.role === 'ADMIN' && (
+                <button
+                  onClick={() => {
+                    if (onOpenAdmin) onOpenAdmin();
+                  }}
+                  style={{
+                    display: 'inline-flex',
+                    alignItems: 'center',
+                    gap: 6,
+                    background: '#fee2e2',
+                    color: '#b91c1c',
+                    border: '1px solid #fca5a5',
+                    borderRadius: 6,
+                    padding: '6px 10px',
+                    fontSize: '0.8rem',
+                    fontWeight: 700,
+                    cursor: 'pointer',
+                    transition: 'all 0.2s',
+                    whiteSpace: 'nowrap',
+                    flexShrink: 0
+                  }}
+                  title="Chuyển sang Giao diện Quản trị viên (Admin Portal)"
+                >
+                  <ShieldCheck size={15} />
+                  <span className="hide-mobile">Admin</span>
+                </button>
+              )}
+
+              {/* Tutor Workspace Portal Button - Only visible for TUTOR */}
+              {currentUser?.role === 'TUTOR' && (
+                <button
+                  onClick={() => {
+                    if (onOpenTutorPortal) onOpenTutorPortal();
+                  }}
+                  style={{
+                    display: 'inline-flex',
+                    alignItems: 'center',
+                    gap: 6,
+                    background: 'linear-gradient(135deg, #7c3aed 0%, #6d28d9 100%)',
+                    color: '#ffffff',
+                    border: 'none',
+                    borderRadius: 6,
+                    padding: '6px 14px',
+                    fontSize: '0.82rem',
+                    fontWeight: 700,
+                    cursor: 'pointer',
+                    transition: 'all 0.2s',
+                    whiteSpace: 'nowrap',
+                    boxShadow: '0 2px 8px rgba(124, 58, 237, 0.35)',
+                    flexShrink: 0
+                  }}
+                  title="Chuyển sang Giao diện Bảng điều khiển Quản lý Gia sư (Tutor Workspace)"
+                >
+                  <GraduationCap size={16} />
+                  <span className="hide-mobile">Giao diện Gia sư</span>
+                </button>
+              )}
+
+              {/* User Profile or Auth Buttons */}
+              {currentUser ? (
+                <div
+                  ref={userMenuRef}
+                  className="ud-user-profile-wrapper"
+                  onMouseEnter={handleUserMenuEnter}
+                  onMouseLeave={handleUserMenuLeave}
+                >
+                  <button
+                    className="ud-user-avatar-btn"
+                    onClick={handleUserMenuToggle}
+                  >
+                    <div
+                      className="user-avatar-circle"
+                      style={{
+                        background: currentUser.role === 'ADMIN'
+                          ? 'linear-gradient(135deg, #ef4444 0%, #dc2626 100%)'
+                          : (currentUser.role === 'TUTOR'
+                            ? 'linear-gradient(135deg, #a435f0 0%, #5624d0 100%)'
+                            : 'linear-gradient(135deg, #2563eb 0%, #1d4ed8 100%)')
+                      }}
+                    >
+                      {currentUser.role === 'ADMIN' ? 'A' : (currentUser.displayName ? currentUser.displayName.charAt(0).toUpperCase() : 'U')}
+                    </div>
+                    <div className="user-nav-details hide-mobile" style={{ textAlign: 'left', lineHeight: 1.25, whiteSpace: 'nowrap', maxWidth: 120, overflow: 'hidden' }}>
+                      <span className="user-nav-name" style={{ display: 'block', fontWeight: 600, fontSize: '0.86rem', color: '#1c1d1f', overflow: 'hidden', textOverflow: 'ellipsis' }}>{currentUser.displayName || currentUser.username}</span>
+                      <span
+                        className="user-nav-role"
+                        style={{
+                          display: 'block',
+                          fontSize: '0.74rem',
+                          color: currentUser.role === 'ADMIN' ? '#dc2626' : (currentUser.role === 'TUTOR' ? '#a435f0' : '#2563eb'),
+                          fontWeight: 700
+                        }}
+                      >
+                        {currentUser.role === 'ADMIN' ? 'Quản trị viên' : (currentUser.role === 'TUTOR' ? 'Gia sư' : 'Học viên')}
+                      </span>
+                    </div>
+                    <ChevronDown size={14} />
+                  </button>
+
+                  {showUserMenu && (
+                    <div
+                      className="ud-user-menu-dropdown animate-fade-in"
+                      onMouseEnter={handleUserMenuEnter}
+                      onMouseLeave={handleUserMenuLeave}
+                    >
+                      <div className="menu-header">
+                        <strong>{currentUser.displayName || currentUser.username}</strong>
+                        <span className="menu-email">{currentUser.email || currentUser.username}</span>
+                        <span
+                          style={{
+                            marginTop: 6,
+                            display: 'inline-block',
+                            fontSize: '0.74rem',
+                            fontWeight: 700,
+                            padding: '3px 8px',
+                            borderRadius: 4,
+                            backgroundColor: currentUser.role === 'ADMIN'
+                              ? '#fee2e2'
+                              : (currentUser.role === 'TUTOR' ? '#f3e8ff' : '#eff6ff'),
+                            color: currentUser.role === 'ADMIN'
+                              ? '#b91c1c'
+                              : (currentUser.role === 'TUTOR' ? '#7e22ce' : '#1d4ed8'),
+                            border: currentUser.role === 'ADMIN'
+                              ? '1px solid #fca5a5'
+                              : (currentUser.role === 'TUTOR' ? '1px solid #d8b4fe' : '1px solid #bfdbfe')
+                          }}
+                        >
+                          Vai trò: {currentUser.role === 'ADMIN' ? 'Quản trị viên hệ thống (Admin)' : (currentUser.role === 'TUTOR' ? 'Gia sư' : 'Học viên')}
+                        </span>
+                      </div>
+                      <div className="menu-divider"></div>
+                      <button
+                        className="menu-item"
+                        onClick={() => { setShowUserMenu(false); if (onOpenWallet) onOpenWallet(); }}
+                        style={{ width: '100%', textAlign: 'left', background: '#eff6ff', border: '1px solid #dbeafe', borderRadius: 4, cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '8px 12px', marginBottom: 6 }}
+                      >
+                        <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                          <Wallet size={16} color="#2563eb" />
+                          <span style={{ fontWeight: 600, color: '#1d4ed8', fontSize: '0.84rem' }}>Ví EduTutor</span>
+                        </div>
+                        <strong style={{ color: '#1d4ed8', fontSize: '0.85rem', whiteSpace: 'nowrap' }}>
+                          {new Intl.NumberFormat('vi-VN', { style: 'currency', currency: 'VND' }).format(userWallet?.availableBalance || 0)}
+                        </strong>
+                      </button>
+
+                      {/* Admin Dashboard Entry */}
+                      {currentUser.role === 'ADMIN' && (
+                        <>
+                          <button
+                            className="menu-item"
+                            onClick={() => { setShowUserMenu(false); if (onOpenAdmin) onOpenAdmin(); }}
+                            style={{ width: '100%', textAlign: 'left', background: '#fef2f2', border: '1px solid #fee2e2', borderRadius: 4, cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 10, color: '#dc2626', fontWeight: 700, marginBottom: 4 }}
+                          >
+                            <ShieldCheck size={16} color="#dc2626" />
+                            <span>Bảng điều khiển Quản trị</span>
+                          </button>
+                          <div className="menu-divider"></div>
+                        </>
+                      )}
+
+                      {/* Tutor Workspace Entry */}
+                      {currentUser.role === 'TUTOR' && (
+                        <>
+                          <button
+                            className="menu-item"
+                            onClick={() => { setShowUserMenu(false); if (onOpenTutorPortal) onOpenTutorPortal(); }}
+                            style={{ width: '100%', textAlign: 'left', background: '#f5f3ff', border: '1px solid #ddd6fe', borderRadius: 4, cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 10, color: '#7c3aed', fontWeight: 700, marginBottom: 4 }}
+                          >
+                            <GraduationCap size={16} color="#7c3aed" />
+                            <span>Không gian làm việc Gia sư</span>
+                          </button>
+                          <div className="menu-divider"></div>
+                        </>
+                      )}
+
+                      <a
+                        href="#courses"
+                        className="menu-item"
+                        onClick={() => setShowUserMenu(false)}
+                      >
+                        <BookOpen size={16} /> Danh sách khóa học
+                      </a>
+
+                      {currentUser.role === 'TUTOR' ? (
+                        <>
+                          <button
+                            className="menu-item"
+                            onClick={() => { setShowUserMenu(false); if (onOpenBookings) onOpenBookings(); }}
+                            style={{ width: '100%', textAlign: 'left', background: 'none', border: 'none', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}
+                          >
+                            <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                              <GraduationCap size={16} color="#a435f0" />
+                              <span>Yêu cầu học viên đặt lịch</span>
+                            </div>
+                            {notificationCount > 0 && (
+                              <span style={{ background: '#a435f0', color: '#fff', fontSize: '0.75rem', padding: '2px 7px', borderRadius: 10, fontWeight: 700 }}>
+                                {notificationCount} mới
+                              </span>
+                            )}
+                          </button>
+
+                        </>
+                      ) : currentUser.role === 'STUDENT' ? (
+                        <button
+                          className="menu-item"
+                          onClick={() => { setShowUserMenu(false); if (onOpenBookings) onOpenBookings(); }}
+                          style={{ width: '100%', textAlign: 'left', background: 'none', border: 'none', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}
+                        >
+                          <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                            <GraduationCap size={16} color="#a435f0" />
+                            <span>Đơn thuê gia sư của tôi</span>
+                          </div>
+                          {notificationCount > 0 && (
+                            <span style={{ background: '#a435f0', color: '#fff', fontSize: '0.75rem', padding: '2px 7px', borderRadius: 10, fontWeight: 700 }}>
+                              {notificationCount}
+                            </span>
+                          )}
+                        </button>
+                      ) : null}
+
+                      <div className="menu-divider"></div>
+                      <button
+                        className="menu-item logout-btn"
+                        onClick={() => { setShowUserMenu(false); onLogout(); }}
+                        style={{ width: '100%', textAlign: 'left', background: 'none', border: 'none', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 10, color: '#dc2626' }}
+                      >
+                        <LogOut size={16} /> Đăng xuất
+                      </button>
+                    </div>
+                  )}
+                </div>
+              ) : (
+                  <div className="ud-auth-btns">
+                    <button
+                      className="btn btn-outline"
+                      onClick={() => onOpenAuth('login')}
+                    >
+                      Đăng nhập
+                    </button>
+                    <button
+                      className="btn btn-dark"
+                      onClick={() => onOpenAuth('register')}
+                    >
+                      Đăng ký
+                    </button>
+                  </div>
+              )}
+
+                  {/* Language Globe */}
+                  <button className="ud-globe-btn hide-laptop" title="Chọn ngôn ngữ">
+                    <Globe size={18} />
+                  </button>
+                </div>
+        </div>
+          </nav>
+        </header>
+        );
+}

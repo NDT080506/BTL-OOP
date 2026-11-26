@@ -1,0 +1,220 @@
+package org.example.web_thue_gia_su_online.service.learning_and_education.impl;
+
+import java.time.Instant;
+import java.util.Objects;
+
+import org.example.web_thue_gia_su_online.dto.request.learning_and_education.CourseEnrollmentCreationRequest;
+import org.example.web_thue_gia_su_online.dto.response.learning_and_education.CourseEnrollmentResponse;
+import org.example.web_thue_gia_su_online.entity.identity_and_administration.User;
+import org.example.web_thue_gia_su_online.entity.learning_and_education.Course;
+import org.example.web_thue_gia_su_online.entity.learning_and_education.CourseEnrollment;
+import org.example.web_thue_gia_su_online.enums.finance_and_wallet.TransactionStatus;
+import org.example.web_thue_gia_su_online.enums.finance_and_wallet.TransactionType;
+import org.example.web_thue_gia_su_online.enums.identity_and_administration.ActionCode;
+import org.example.web_thue_gia_su_online.enums.learning_and_education.EnrollmentStatus;
+import org.example.web_thue_gia_su_online.exception.AppException;
+import org.example.web_thue_gia_su_online.exception.ErrorCode;
+import org.example.web_thue_gia_su_online.mapper.learning_and_education.CourseEnrollmentMapper;
+import org.example.web_thue_gia_su_online.repository.finance_and_wallet.PaymentTransactionRepository;
+import org.example.web_thue_gia_su_online.repository.identity_and_administration.UserRepository;
+import org.example.web_thue_gia_su_online.repository.learning_and_education.CourseEnrollmentRepository;
+import org.example.web_thue_gia_su_online.repository.learning_and_education.CourseRepository;
+import org.example.web_thue_gia_su_online.service.identity_and_administration.ActionLogService;
+import org.example.web_thue_gia_su_online.service.learning_and_education.CourseEnrollmentService;
+import org.springframework.data.domain.Page;
+import org.springframework.data.domain.Pageable;
+import org.springframework.security.access.AccessDeniedException;
+import org.springframework.security.access.prepost.PreAuthorize;
+import org.springframework.security.core.context.SecurityContextHolder;
+import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
+
+import lombok.AccessLevel;
+import lombok.RequiredArgsConstructor;
+import lombok.experimental.FieldDefaults;
+import lombok.extern.slf4j.Slf4j;
+
+@Service
+@RequiredArgsConstructor
+@Slf4j
+@FieldDefaults(level = AccessLevel.PRIVATE, makeFinal = true)
+public class CourseEnrollmentServiceImpl implements CourseEnrollmentService {
+
+    CourseEnrollmentRepository courseEnrollmentRepository;
+    UserRepository userRepository;
+    CourseRepository courseRepository;
+    CourseEnrollmentMapper courseEnrollmentMapper;
+    PaymentTransactionRepository paymentTransactionRepository;
+    ActionLogService actionLogService;
+
+    private String getCurrentUserId() {
+        return Objects.requireNonNull(SecurityContextHolder.getContext().getAuthentication())
+                .getName();
+    }
+
+    @Override
+    @Transactional
+    @PreAuthorize("hasRole('STUDENT')")
+    public CourseEnrollmentResponse enrollCourse(CourseEnrollmentCreationRequest request) {
+        // 1. Lấy studentId từ JWT
+        String studentId = getCurrentUserId();
+        User student = userRepository.findById(studentId).orElseThrow(() -> new AppException(ErrorCode.USER_NOT_FOUND));
+
+        // 2. Kiểm tra course tồn tại và đang active
+        Course course = courseRepository
+                .findById(request.getCourseId())
+                .orElseThrow(() -> new AppException(ErrorCode.COURSE_NOT_FOUND));
+
+        if (!course.isActive()) {
+            throw new AppException(ErrorCode.UNAUTHORIZED);
+        }
+
+        // 3. Không cho phép đăng ký trùng
+        courseEnrollmentRepository
+                .findByStudentIdAndCourseId(student.getId(), course.getId())
+                .ifPresent(existing -> {
+                    throw new AppException(ErrorCode.USER_EXISTED);
+                });
+
+        // 4. Tính giá từ course price, không tin client
+        long totalPrice = course.getPrice();
+        long platformFee = totalPrice * course.getPlatformFeePercent() / 100;
+        long tutorIncome = totalPrice - platformFee;
+
+        CourseEnrollment enrollment = CourseEnrollment.builder()
+                .student(student)
+                .course(course)
+                .totalPrice(totalPrice)
+                .pricePaid(totalPrice)
+                .progressPercent(0)
+                .platformFee(platformFee)
+                .tutorIncome(tutorIncome)
+                .status(totalPrice > 0 ? EnrollmentStatus.PENDING : EnrollmentStatus.ACTIVE)
+                .build();
+
+        CourseEnrollment savedEnrollment = courseEnrollmentRepository.save(enrollment);
+        actionLogService.log(ActionCode.ENROLL_COURSE, student, "CourseEnrollment", savedEnrollment.getId());
+        return courseEnrollmentMapper.toResponse(savedEnrollment);
+    }
+
+    @Override
+    @Transactional(readOnly = true)
+    @PreAuthorize("hasRole('ADMIN')")
+    public CourseEnrollmentResponse getEnrollment(String id) {
+        CourseEnrollment enrollment =
+                courseEnrollmentRepository.findById(id).orElseThrow(() -> new AppException(ErrorCode.COURSE_NOT_FOUND));
+        return courseEnrollmentMapper.toResponse(enrollment);
+    }
+
+    @Override
+    @Transactional(readOnly = true)
+    @PreAuthorize("hasRole('STUDENT')")
+    public Page<CourseEnrollmentResponse> getEnrollmentsByStudent(Pageable pageable) {
+        String studentId = getCurrentUserId();
+        return courseEnrollmentRepository.findResponsesByStudentId(studentId, pageable);
+    }
+
+    @Override
+    @Transactional(readOnly = true)
+    @PreAuthorize("hasAnyRole('ADMIN', 'TUTOR')")
+    public Page<CourseEnrollmentResponse> getEnrollmentsByCourse(String courseId, Pageable pageable) {
+        Course course =
+                courseRepository.findById(courseId).orElseThrow(() -> new AppException(ErrorCode.COURSE_NOT_FOUND));
+
+        // Admin được xem tất cả; tutor chỉ xem course mình sở hữu
+        boolean isAdmin =
+                Objects.requireNonNull(SecurityContextHolder.getContext().getAuthentication()).getAuthorities().stream()
+                        .anyMatch(a -> a.getAuthority().equals("ADMIN")
+                                || a.getAuthority().equals("ROLE_ADMIN"));
+
+        if (!isAdmin) {
+            String currentUserId = getCurrentUserId();
+            boolean isOwner = course.getTutor().getId().equals(currentUserId);
+            if (!isOwner) {
+                throw new AccessDeniedException("Bạn không có quyền xem enrollment của khóa học này");
+            }
+        }
+
+        return courseEnrollmentRepository.findResponsesByCourseId(courseId, pageable);
+    }
+
+    @Override
+    @Transactional
+    @PreAuthorize("hasRole('STUDENT')")
+    public CourseEnrollmentResponse updateEnrollment(String id) {
+        CourseEnrollment enrollment =
+                courseEnrollmentRepository.findById(id).orElseThrow(() -> new AppException(ErrorCode.COURSE_NOT_FOUND));
+
+        // Resource-level authorization
+        String currentUserId = getCurrentUserId();
+        if (!enrollment.getStudent().getId().equals(currentUserId)) {
+            throw new AccessDeniedException("Bạn không có quyền hủy enrollment này");
+        }
+
+        // Không cho hủy enrollment đã hoàn thành
+        if (enrollment.getStatus() == EnrollmentStatus.COMPLETED) {
+            throw new AppException(ErrorCode.COURSE_ENROLLMENT_ALREADY_COMPLETED);
+        }
+
+        // Không cho hủy enrollment đã có escrow hold — tiền đang được giữ, cần flow refund
+        boolean hasEscrowHold = paymentTransactionRepository.existsByEnrollment_IdAndTypeAndStatus(
+                id, TransactionType.ESCROW_HOLD, TransactionStatus.SUCCESS);
+
+        if (hasEscrowHold) {
+            throw new AppException(ErrorCode.ENROLLMENT_HAS_ESCROW_HOLD);
+        }
+
+        enrollment.setStatus(EnrollmentStatus.CANCELLED);
+        courseEnrollmentRepository.save(enrollment);
+        actionLogService.log(ActionCode.CANCEL_ENROLLMENT, enrollment.getStudent(), "CourseEnrollment", id);
+        return courseEnrollmentMapper.toResponse(enrollment);
+    }
+
+    @Override
+    @Transactional
+    @PreAuthorize("hasRole('TUTOR')")
+    public CourseEnrollmentResponse completeEnrollment(String enrollmentId) {
+        // 1. Lấy enrollment
+        CourseEnrollment enrollment = courseEnrollmentRepository
+                .findByIdForUpdate(enrollmentId)
+                .orElseThrow(() -> new AppException(ErrorCode.COURSE_ENROLLMENT_NOT_FOUND));
+
+        // 2. Lấy ID người đang đăng nhập
+        String currentUserId = getCurrentUserId();
+
+        // 3. Kiểm tra gia sư sở hữu khóa học
+        String tutorId = enrollment.getCourse().getTutor().getId();
+
+        if (!tutorId.equals(currentUserId)) {
+            throw new AccessDeniedException("Bạn không có quyền xác nhận hoàn thành khóa học này");
+        }
+
+        // 4. Chỉ cho phép hoàn thành enrollment đang ACTIVE
+        if (enrollment.getStatus() == EnrollmentStatus.COMPLETED) {
+            throw new AppException(ErrorCode.COURSE_ENROLLMENT_ALREADY_COMPLETED);
+        }
+
+        if (enrollment.getStatus() != EnrollmentStatus.ACTIVE) {
+            throw new AppException(ErrorCode.COURSE_ENROLLMENT_NOT_ACTIVE);
+        }
+
+        // 5. Cập nhật trạng thái hoàn thành
+        enrollment.setStatus(EnrollmentStatus.COMPLETED);
+        enrollment.setCompletedAt(Instant.now());
+        courseEnrollmentRepository.save(enrollment);
+
+        actionLogService.log(ActionCode.COMPLETE_ENROLLMENT, enrollment.getStudent(), "CourseEnrollment", enrollmentId);
+
+        return courseEnrollmentMapper.toResponse(enrollment);
+    }
+
+    @Override
+    @Transactional
+    @PreAuthorize("hasRole('ADMIN')")
+    public void deleteEnrollment(String id) {
+        CourseEnrollment enrollment =
+                courseEnrollmentRepository.findById(id).orElseThrow(() -> new AppException(ErrorCode.COURSE_NOT_FOUND));
+        courseEnrollmentRepository.delete(enrollment);
+        actionLogService.log(ActionCode.DELETE_ENROLLMENT, enrollment.getStudent(), "CourseEnrollment", id);
+    }
+}

@@ -1,0 +1,281 @@
+package org.example.web_thue_gia_su_online.service.disputing_and_reporting.impl;
+
+import java.time.Instant;
+import java.util.Objects;
+
+import org.example.web_thue_gia_su_online.dto.request.disputing_and_reporting.DisputeCreationRequest;
+import org.example.web_thue_gia_su_online.dto.response.disputing_and_reporting.DisputeResponse;
+import org.example.web_thue_gia_su_online.entity.disputing_and_reporting.Dispute;
+import org.example.web_thue_gia_su_online.entity.identity_and_administration.User;
+import org.example.web_thue_gia_su_online.entity.learning_and_education.Booking;
+import org.example.web_thue_gia_su_online.entity.learning_and_education.CourseEnrollment;
+import org.example.web_thue_gia_su_online.enums.disputing_and_reporting.DisputeStatus;
+import org.example.web_thue_gia_su_online.enums.finance_and_wallet.TransactionStatus;
+import org.example.web_thue_gia_su_online.enums.finance_and_wallet.TransactionType;
+import org.example.web_thue_gia_su_online.enums.identity_and_administration.ActionCode;
+import org.example.web_thue_gia_su_online.enums.learning_and_education.BookingStatus;
+import org.example.web_thue_gia_su_online.enums.learning_and_education.EnrollmentStatus;
+import org.example.web_thue_gia_su_online.exception.AppException;
+import org.example.web_thue_gia_su_online.exception.ErrorCode;
+import org.example.web_thue_gia_su_online.mapper.disputing_and_reporting.DisputeMapper;
+import org.example.web_thue_gia_su_online.repository.disputing_and_reporting.DisputeRepository;
+import org.example.web_thue_gia_su_online.repository.finance_and_wallet.PaymentTransactionRepository;
+import org.example.web_thue_gia_su_online.repository.identity_and_administration.UserRepository;
+import org.example.web_thue_gia_su_online.repository.learning_and_education.BookingRepository;
+import org.example.web_thue_gia_su_online.repository.learning_and_education.CourseEnrollmentRepository;
+import org.example.web_thue_gia_su_online.service.disputing_and_reporting.DisputeService;
+import org.example.web_thue_gia_su_online.service.finance_and_wallet.RefundService;
+import org.example.web_thue_gia_su_online.service.identity_and_administration.ActionLogService;
+import org.springframework.data.domain.Page;
+import org.springframework.data.domain.Pageable;
+import org.springframework.security.access.prepost.PreAuthorize;
+import org.springframework.security.core.context.SecurityContextHolder;
+import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
+
+import lombok.AccessLevel;
+import lombok.RequiredArgsConstructor;
+import lombok.experimental.FieldDefaults;
+
+@Service
+@RequiredArgsConstructor
+@FieldDefaults(level = AccessLevel.PRIVATE, makeFinal = true)
+public class DisputeServiceImpl implements DisputeService {
+
+    DisputeRepository disputeRepository;
+    BookingRepository bookingRepository;
+    DisputeMapper disputeMapper;
+    CourseEnrollmentRepository enrollmentRepository;
+    UserRepository userRepository;
+    PaymentTransactionRepository paymentTransactionRepository;
+    RefundService refundService;
+    ActionLogService actionLogService;
+
+    private String getCurrentStudentId() {
+        return Objects.requireNonNull(SecurityContextHolder.getContext().getAuthentication())
+                .getName();
+    }
+
+    @Override
+    @Transactional
+    @PreAuthorize("hasRole('STUDENT')")
+    public DisputeResponse createDispute(DisputeCreationRequest request) {
+        boolean hasBooking = request.getBookingId() != null;
+        boolean hasEnrollment = request.getEnrollmentId() != null;
+
+        if (hasBooking == hasEnrollment) {
+            throw new AppException(ErrorCode.INVALID_DISPUTE_TARGET);
+        }
+
+        String studentId = getCurrentStudentId();
+
+        User creator = userRepository.findById(studentId).orElseThrow(() -> new AppException(ErrorCode.USER_NOT_FOUND));
+
+        Dispute.DisputeBuilder builder = Dispute.builder()
+                .createdBy(creator)
+                .reason(request.getReason())
+                .evidenceUrl(request.getEvidenceUrl())
+                .status(DisputeStatus.UNDER_REVIEW);
+
+        if (hasBooking) {
+            Booking booking = bookingRepository
+                    .findById(request.getBookingId())
+                    .orElseThrow(() -> new AppException(ErrorCode.BOOKING_NOT_FOUND));
+
+            validateBookingParticipant(booking, studentId);
+            validateBookingPayment(booking);
+
+            boolean exists = disputeRepository.existsByBooking_IdAndStatus(booking.getId(), DisputeStatus.UNDER_REVIEW);
+
+            if (exists) {
+                throw new AppException(ErrorCode.DISPUTE_ALREADY_ACTIVE);
+            }
+
+            builder.booking(booking);
+        }
+
+        if (hasEnrollment) {
+            CourseEnrollment enrollment = enrollmentRepository
+                    .findById(request.getEnrollmentId())
+                    .orElseThrow(() -> new AppException(ErrorCode.COURSE_ENROLLMENT_NOT_ACTIVE));
+
+            validateEnrollmentParticipant(enrollment, studentId);
+            validateEnrollmentPayment(enrollment);
+
+            boolean exists =
+                    disputeRepository.existsByEnrollment_IdAndStatus(enrollment.getId(), DisputeStatus.UNDER_REVIEW);
+
+            if (exists) {
+                throw new AppException(ErrorCode.DISPUTE_ALREADY_ACTIVE);
+            }
+
+            builder.enrollment(enrollment);
+        }
+
+        Dispute dispute = disputeRepository.save(builder.build());
+        actionLogService.log(ActionCode.CREATE_DISPUTE, creator, "Dispute", dispute.getId());
+        return disputeMapper.toResponse(dispute);
+    }
+
+    private void validateBookingParticipant(Booking booking, String studentId) {
+        if (!booking.getStudent().getId().equals(studentId)) {
+            throw new AppException(ErrorCode.INVALID_PARTICIPANT);
+        }
+    }
+
+    private void validateEnrollmentParticipant(CourseEnrollment enrollment, String studentId) {
+        if (!enrollment.getStudent().getId().equals(studentId)) {
+            throw new AppException(ErrorCode.INVALID_PARTICIPANT);
+        }
+    }
+
+    private void validateBookingPayment(Booking booking) {
+
+        boolean escrowIsHeld = booking.getStatus() == BookingStatus.PENDING_CONFIRMATION
+                && paymentTransactionRepository.existsByBooking_IdAndTypeAndStatus(
+                        booking.getId(), TransactionType.ESCROW_HOLD, TransactionStatus.SUCCESS)
+                && !paymentTransactionRepository.existsByBooking_IdAndTypeAndStatus(
+                        booking.getId(), TransactionType.ESCROW_RELEASE, TransactionStatus.SUCCESS);
+
+        if (!escrowIsHeld) {
+            throw new AppException(ErrorCode.PAYMENT_NOT_COMPLETED);
+        }
+    }
+
+    private void validateEnrollmentPayment(CourseEnrollment enrollment) {
+
+        boolean escrowIsHeld = enrollment.getStatus() == EnrollmentStatus.ACTIVE
+                && paymentTransactionRepository.existsByEnrollment_IdAndTypeAndStatus(
+                        enrollment.getId(), TransactionType.ESCROW_HOLD, TransactionStatus.SUCCESS)
+                && !paymentTransactionRepository.existsByEnrollment_IdAndTypeAndStatus(
+                        enrollment.getId(), TransactionType.ESCROW_RELEASE, TransactionStatus.SUCCESS);
+
+        if (!escrowIsHeld) {
+            throw new AppException(ErrorCode.PAYMENT_NOT_COMPLETED);
+        }
+    }
+
+    @Override
+    @Transactional(readOnly = true)
+    @PreAuthorize("hasRole('STUDENT')")
+    public Page<DisputeResponse> getMyDisputes(Pageable pageable) {
+        String studentId = getCurrentStudentId();
+        return disputeRepository.findResponsesByUserId(studentId, pageable);
+    }
+
+    @Override
+    @Transactional(readOnly = true)
+    @PreAuthorize("hasRole('STUDENT')")
+    public DisputeResponse getMyDispute(String disputeId) {
+        String studentId = getCurrentStudentId();
+
+        Dispute dispute = disputeRepository
+                .findByIdAndCreatedBy_Id(disputeId, studentId)
+                .orElseThrow(() -> new AppException(ErrorCode.DISPUTE_NOT_FOUND));
+
+        return disputeMapper.toResponse(dispute);
+    }
+
+    @Override
+    @Transactional
+    @PreAuthorize("hasRole('STUDENT')")
+    public void cancelDispute(String disputeId) {
+        String studentId = getCurrentStudentId();
+
+        Dispute dispute = disputeRepository
+                .findByIdAndCreatedBy_Id(disputeId, studentId)
+                .orElseThrow(() -> new AppException(ErrorCode.DISPUTE_NOT_FOUND));
+
+        if (dispute.getStatus() == DisputeStatus.REJECTED
+                || dispute.getStatus() == DisputeStatus.APPROVED
+                || dispute.getStatus() == DisputeStatus.REFUND_PENDING
+                || dispute.getStatus() == DisputeStatus.CANCELLED) {
+            throw new AppException(ErrorCode.DISPUTE_CANNOT_BE_CANCELLED);
+        }
+
+        dispute.setStatus(DisputeStatus.CANCELLED);
+        disputeRepository.save(dispute);
+        actionLogService.log(ActionCode.CANCEL_DISPUTE, dispute.getCreatedBy(), "Dispute", disputeId);
+    }
+
+    @Override
+    @Transactional(readOnly = true)
+    @PreAuthorize("hasRole('ADMIN')")
+    public Page<DisputeResponse> getAllDisputes(DisputeStatus status, Pageable pageable) {
+        return status == null
+                ? disputeRepository.findResponsesAll(pageable)
+                : disputeRepository.findResponsesByStatus(status, pageable);
+    }
+
+    @Override
+    @Transactional(readOnly = true)
+    @PreAuthorize("hasRole('ADMIN')")
+    public DisputeResponse getDisputeDetail(String disputeId) {
+        Dispute dispute =
+                disputeRepository.findById(disputeId).orElseThrow(() -> new AppException(ErrorCode.DISPUTE_NOT_FOUND));
+
+        return disputeMapper.toResponse(dispute);
+    }
+
+    @Override
+    @Transactional
+    @PreAuthorize("hasRole('ADMIN')")
+    public DisputeResponse approveDispute(String disputeId) {
+        Dispute dispute = disputeRepository
+                .findByIdForUpdate(disputeId)
+                .orElseThrow(() -> new AppException(ErrorCode.DISPUTE_NOT_FOUND));
+
+        if (dispute.getStatus() != DisputeStatus.UNDER_REVIEW && dispute.getStatus() != DisputeStatus.REFUND_PENDING) {
+            throw new AppException(ErrorCode.DISPUTE_NOT_FOUND);
+        }
+
+        if (dispute.getRefundAmount() == 0) {
+            long totalPrice = dispute.getBooking() != null
+                    ? dispute.getBooking().getTotalPrice()
+                    : dispute.getEnrollment().getTotalPrice();
+            dispute.setRefundAmount(totalPrice);
+        }
+
+        boolean refunded = refundService.refundDispute(dispute);
+
+        if (dispute.getBooking() != null) {
+            dispute.getBooking().setStatus(BookingStatus.CANCELLED);
+            bookingRepository.save(dispute.getBooking());
+        }
+        if (dispute.getEnrollment() != null) {
+            dispute.getEnrollment().setStatus(EnrollmentStatus.CANCELLED);
+            enrollmentRepository.save(dispute.getEnrollment());
+        }
+
+        dispute.setAdminNote(
+                refunded
+                        ? "Dispute approved and refund completed"
+                        : "Dispute approved; refund pending manual balance recovery");
+        dispute.setStatus(refunded ? DisputeStatus.APPROVED : DisputeStatus.REFUND_PENDING);
+        dispute.setResolvedAt(refunded ? Instant.now() : null);
+        disputeRepository.save(dispute);
+        actionLogService.log(ActionCode.APPROVE_DISPUTE, dispute.getCreatedBy(), "Dispute", disputeId);
+
+        return disputeMapper.toResponse(dispute);
+    }
+
+    @Override
+    @Transactional
+    @PreAuthorize("hasRole('ADMIN')")
+    public DisputeResponse rejectDispute(String disputeId) {
+        Dispute dispute =
+                disputeRepository.findById(disputeId).orElseThrow(() -> new AppException(ErrorCode.DISPUTE_NOT_FOUND));
+
+        if (dispute.getStatus() != DisputeStatus.UNDER_REVIEW) {
+            throw new AppException(ErrorCode.DISPUTE_NOT_FOUND);
+        }
+
+        dispute.setAdminNote("Your dispute has been rejected by the creator");
+        dispute.setStatus(DisputeStatus.REJECTED);
+        dispute.setResolvedAt(Instant.now());
+        disputeRepository.save(dispute);
+        actionLogService.log(ActionCode.REJECT_DISPUTE, dispute.getCreatedBy(), "Dispute", disputeId);
+
+        return disputeMapper.toResponse(dispute);
+    }
+}

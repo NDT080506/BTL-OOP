@@ -1,0 +1,1072 @@
+const BASE_URL = import.meta.env.VITE_API_URL || '/api';
+
+/**
+ * Helper giải mã JWT payload và trích xuất vai trò (Role)
+ */
+export function parseJwtPayload(token) {
+  if (!token) return null;
+  try {
+    const parts = token.split('.');
+    if (parts.length < 2) return null;
+    const base64Url = parts[1];
+    const base64 = base64Url.replace(/-/g, '+').replace(/_/g, '/');
+    const jsonPayload = decodeURIComponent(
+      atob(base64)
+        .split('')
+        .map((c) => '%' + ('00' + c.charCodeAt(0).toString(16)).slice(-2))
+        .join('')
+    );
+    return JSON.parse(jsonPayload);
+  } catch {
+    return null;
+  }
+}
+
+export function getRoleFromToken(token) {
+  const payload = parseJwtPayload(token);
+  if (!payload) return null;
+  const scope = payload.scope || '';
+  if (scope.includes('ADMIN')) return 'ADMIN';
+  if (scope.includes('TUTOR')) return 'TUTOR';
+  if (scope.includes('STUDENT')) return 'STUDENT';
+  return null;
+}
+
+/**
+ * Helper to make HTTP requests with JWT token attachment
+ */
+async function request(endpoint, options = {}) {
+  const { skipAuth = false, ...fetchOptions } = options;
+  const token = sessionStorage.getItem('token');
+
+  const headers = {
+    'Content-Type': 'application/json',
+
+    ...(token && !skipAuth
+      ? { Authorization: `Bearer ${token}` }
+      : {}),
+
+    ...fetchOptions.headers,
+  };
+
+  try {
+    const res = await fetch(`${BASE_URL}${endpoint}`, {
+      ...fetchOptions,
+      headers,
+    });
+
+    let data = null;
+    const responseText = await res.text();
+    if (responseText.trim()) {
+      try {
+        data = JSON.parse(responseText);
+      } catch {
+        if (res.ok) {
+          const error = new Error(
+            `API trả về dữ liệu không phải JSON (HTTP ${res.status}).`
+          );
+          error.status = res.status;
+          throw error;
+        }
+      }
+    }
+
+    if (!res.ok) {
+      const error = new Error(
+        data?.message || `Lỗi HTTP: ${res.status}`
+      );
+
+      error.status = res.status;
+      error.data = data;
+
+      throw error;
+    }
+
+    return data?.result !== undefined
+      ? data.result
+      : data;
+
+  } catch (error) {
+    console.warn(
+      `[API] Gọi ${endpoint} thất bại:`,
+      error.message
+    );
+
+    throw error;
+  }
+}
+
+/**
+ * Helper trích xuất mảng phần tử từ Spring Data Page<T> (hoặc trả nguyên mảng nếu BE trả List)
+ */
+function extractPageContent(res) {
+  if (Array.isArray(res)) return res;
+  if (res && Array.isArray(res.content)) return res.content;
+  return [];
+}
+
+/**
+ * Helper gắn tham số phân trang mặc định cho các API dùng Pageable trên BE Optimize01
+ */
+function withPagination(endpoint, page = 0, size = 10) {
+  const separator = endpoint.includes('?') ? '&' : '?';
+  return `${endpoint}${separator}page=${page}&size=${size}`;
+}
+
+/* ==================== 1. AUTHENTICATION & USERS ==================== */
+export const authApi = {
+  // POST /auth/login (Backend requires displayName & password)
+  login: async (displayName, password) => {
+    const res = await request('/auth/login', {
+      method: 'POST',
+      skipAuth: true,
+      body: JSON.stringify({ displayName, password }),
+    });
+    // Backend Spring Boot returns result.accessToken
+    const token = res?.accessToken || res?.token;
+    if (token) {
+      sessionStorage.setItem('token', token);
+    }
+    if (res?.refreshToken) {
+      sessionStorage.setItem('refreshToken', res.refreshToken);
+    }
+    return res;
+  },
+
+  // POST /users (Register requires email, password, displayName, role)
+  register: async (userData) => {
+    return await request('/users', {
+      method: 'POST',
+      skipAuth: true,
+      body: JSON.stringify({
+        displayName: userData.displayName,
+        email: userData.email,
+        password: userData.password,
+        role: userData.role
+      }),
+    });
+  },
+
+  // GET /users (Get current user)
+  getMyInfo: async () => {
+    const res = await request('/users');
+    const token = sessionStorage.getItem('token');
+    const tokenRole = getRoleFromToken(token);
+    if (res && tokenRole) {
+      res.role = tokenRole;
+    }
+    return res;
+  },
+
+  // POST /auth/logout
+  logout: async () => {
+    const accessToken = sessionStorage.getItem('token');
+    const refreshToken = sessionStorage.getItem('refreshToken');
+
+    try {
+      if (!accessToken || !refreshToken) {
+        throw new Error(
+          'Không tìm thấy access token hoặc refresh token.'
+        );
+      }
+
+      await request('/auth/logout', {
+        method: 'POST',
+        skipAuth: true,
+        body: JSON.stringify({
+          accessToken,
+          refreshToken,
+        }),
+      });
+
+    } finally {
+      sessionStorage.removeItem('token');
+      sessionStorage.removeItem('refreshToken');
+    }
+  },
+
+clearSession: () => {
+  sessionStorage.removeItem('token');
+  sessionStorage.removeItem('refreshToken');
+},
+
+  getToken: () => sessionStorage.getItem('token'),
+  isAuthenticated: () => !!sessionStorage.getItem('token'),
+};
+
+/* ==================== 2. ARTICLES & COMMENTS ==================== */
+export const articleApi = {
+  // GET /articles (Public, trả về Page<ArticleResponse>)
+  getArticles: async (page = 0, size = 10) => {
+    const res = await request(withPagination('/articles', page, size));
+    return extractPageContent(res);
+  },
+
+  // GET /articles/:id
+  getArticle: async (id) => {
+    return await request(`/articles/${id}`);
+  },
+
+  // GET /articles/my-articles (trả về Page<ArticleResponse>)
+  getMyArticles: async (page = 0, size = 10) => {
+    const res = await request(withPagination('/articles/my-articles', page, size));
+    return extractPageContent(res);
+  },
+
+  // POST /articles (Create new article)
+  createArticle: async (articleData) => {
+    return await request('/articles', {
+      method: 'POST',
+      body: JSON.stringify(articleData),
+    });
+  },
+
+  // DELETE /articles/:id (Chỉ tác giả hoặc Admin mới có quyền xóa)
+  deleteArticle: async (id) => {
+    return await request(`/articles/${id}`, {
+      method: 'DELETE',
+    });
+  },
+
+  // GET /article-comments/article/:articleId (trả về Page<ArticleCommentResponse>)
+  getComments: async (articleId, page = 0, size = 10) => {
+    const res = await request(withPagination(`/article-comments/article/${articleId}`, page, size));
+    return extractPageContent(res);
+  },
+
+  // POST /article-comments/:articleId
+  createComment: async (articleId, content, parentId = null) => {
+    return await request(`/article-comments/${articleId}`, {
+      method: 'POST',
+      body: JSON.stringify({ content, parentId }),
+    });
+  },
+};
+
+/* ==================== 3. COURSES & ENROLLMENT ==================== */
+export const courseApi = {
+  // Lấy danh sách khóa học
+  getCourses: async (page = 0, size = 10) => {
+    const res = await request(
+      withPagination('/courses', page, size)
+    );
+    return extractPageContent(res);
+  },
+
+  // Lấy khóa học theo ID
+  getCourse: async (id) => {
+    return await request(`/courses/${id}`);
+  },
+
+  // Lấy khóa học của gia sư
+  getCoursesByTutor: async (tutorId, page = 0, size = 10) => {
+    const res = await request(
+      withPagination(`/courses/tutor/${tutorId}`, page, size)
+    );
+    return extractPageContent(res);
+  },
+
+  // Tạo khóa học
+  createCourse: async (courseData) => {
+    return await request('/courses', {
+      method: 'POST',
+      body: JSON.stringify(courseData),
+    });
+  },
+
+  // Sửa khóa học
+  updateCourse: async (id, courseData) => {
+    return await request(`/courses/tutor/${id}`, {
+      method: 'PATCH',
+      body: JSON.stringify({
+        title: courseData.title,
+        price: Number(courseData.price),
+        platformFeePercent: Number(courseData.platformFeePercent),
+        active: Boolean(courseData.active),
+      }),
+    });
+  },
+
+  // Xóa khóa học
+  deleteCourse: async (id) => {
+    return await request(`/courses/${id}`, {
+      method: 'DELETE',
+    });
+  },
+
+  // Lấy danh sách bài học
+  getLessons: async (courseId, page = 0, size = 10) => {
+    const res = await request(
+      withPagination(`/lessons/course/${courseId}`, page, size)
+    );
+    return extractPageContent(res);
+  },
+
+  // Tạo ghi danh
+  enrollCourse: async (courseId) => {
+    return await request('/course-enrollments', {
+      method: 'POST',
+      body: JSON.stringify({ courseId }),
+    });
+  },
+
+  // Lấy danh sách ghi danh của học viên hiện tại
+  getMyEnrollments: async (page = 0, size = 10) => {
+    const res = await request(
+      withPagination('/course-enrollments/me', page, size)
+    );
+    return extractPageContent(res);
+  },
+
+  // Lấy ghi danh của học viên theo khóa học hiện tại
+  getMyEnrollmentByCourse: async (courseId) => {
+    let page = 0;
+    let totalPages = 1;
+
+    while (page < totalPages) {
+      const result = await request(
+        withPagination('/course-enrollments/me', page, 10)
+      );
+
+      const enrollments = extractPageContent(result);
+
+      const enrollment = enrollments.find(
+        item => item.courseId === courseId
+      );
+
+      if (enrollment) {
+        return enrollment;
+      }
+
+      totalPages = result?.totalPages ?? 1;
+      page++;
+    }
+
+    return null;
+  },
+
+
+  // Gia sư lấy danh sách học viên ghi danh khóa học
+  getEnrollmentsByCourse: async (courseId, page = 0, size = 10) => {
+    const res = await request(
+      withPagination(
+        `/course-enrollments/course/${courseId}`,
+        page,
+        size
+      )
+    );
+
+    return extractPageContent(res);
+  },
+
+  // Lấy thông tin một enrollment
+  getEnrollment: async (enrollmentId) => {
+    return await request(`/course-enrollments/${enrollmentId}`);
+  },
+
+  // Học viên hủy ghi danh
+  cancelEnrollment: async (enrollmentId) => {
+    return await request(
+      `/course-enrollments/${enrollmentId}/cancel`,
+      { method: 'PATCH' }
+    );
+  },
+
+  // Gia sư cập nhật trạng thái ghi danh sau khi khóa học hoàn thành
+  completeEnrollment: async (enrollmentId) => {
+    return await request(
+      `/course-enrollments/tutor/${enrollmentId}/complete`,
+      { method: 'PATCH' }
+    );
+  },
+};
+
+/* ==================== 4. CONVERSATION & AGREEMENT ==================== */
+const directConversationRequests = new Map();
+
+export const conversationApi = {
+  // POST /conversations/direct (Tạo hoặc lấy hội thoại trực tiếp với gia sư)
+  createDirect: async (tutorId) => {
+    const key = `${sessionStorage.getItem('token') || ''}:${tutorId}`;
+    const inFlightRequest = directConversationRequests.get(key);
+    if (inFlightRequest) return inFlightRequest;
+
+    const pendingRequest = request('/conversations/direct', {
+      method: 'POST',
+      body: JSON.stringify({ tutorId }),
+    });
+    directConversationRequests.set(key, pendingRequest);
+
+    try {
+      return await pendingRequest;
+    } finally {
+      if (directConversationRequests.get(key) === pendingRequest) {
+        directConversationRequests.delete(key);
+      }
+    }
+  },
+
+  // GET /conversations/me (Lấy danh sách cuộc trò chuyện của tôi - Page<ConversationResponse>)
+  getMyConversations: async (page = 0, size = 10) => {
+    const res = await request(withPagination('/conversations/me', page, size));
+    return extractPageContent(res);
+  },
+
+  // GET /conversations/:id
+  getConversation: async (id) => {
+    return await request(`/conversations/${id}`);
+  },
+
+  // PATCH /conversations/:id/agreement/student (Xác nhận đồng ý điều kiện thương lượng)
+  agreeAsStudent: async (id) => {
+    return await request(`/conversations/${id}/agreement/student`, {
+      method: 'PATCH',
+    });
+  },
+
+  // PATCH /conversations/:id/decline/student (Từ chối điều kiện)
+  declineAsStudent: async (id) => {
+    return await request(`/conversations/${id}/decline/student`, {
+      method: 'PATCH',
+    });
+  },
+};
+
+/* ==================== 4.1. MESSAGES & REALTIME ==================== */
+export const messageApi = {
+  // GET /messages/conversation/:conversationId (trả về Page<MessageResponse>)
+  getMessages: async (conversationId, page = 0, size = 200) => {
+    const res = await request(withPagination(`/messages/conversation/${conversationId}`, page, size));
+    return extractPageContent(res);
+  },
+
+  // POST /messages
+  sendMessage: async (conversationId, content) => {
+    return await request('/messages', {
+      method: 'POST',
+      body: JSON.stringify({ conversationId, content }),
+    });
+  },
+};
+
+/* ==================== 5. BROKERAGE PACKAGES ==================== */
+export const brokeragePackageApi = {
+  // Lấy danh sách gói theo gia sư
+  getPackagesByTutor: async (tutorId, page = 0, size = 10) => {
+    const res = await request(
+      withPagination(
+        `/brokerage-packages/tutor/${tutorId}`,
+        page,
+        size
+      )
+    );
+
+    return extractPageContent(res);
+  },
+
+  // Lấy tất cả gói (chỉ Admin được phép)
+  getAllActivePackages: async (page = 0, size = 10) => {
+    const res = await request(
+      withPagination(
+        '/brokerage-packages/admin/get-all',
+        page,
+        size
+      )
+    );
+
+    return extractPageContent(res);
+  },
+
+  // Lấy chi tiết gói
+  getPackage: async (id) => {
+    return await request(`/brokerage-packages/${id}`);
+  },
+
+  // Tạo gói
+  createPackage: async (packageData) => {
+    return await request('/brokerage-packages', {
+      method: 'POST',
+      body: JSON.stringify(packageData),
+    });
+  },
+
+  // Sửa gói
+  updatePackage: async (id, packageData, role = 'TUTOR') => {
+    const endpoint = role === 'ADMIN'
+      ? `/brokerage-packages/admin/${id}`
+      : `/brokerage-packages/tutor/${id}`;
+
+    return await request(endpoint, {
+      method: 'PATCH',
+      body: JSON.stringify({
+        name: packageData.name,
+        price: Number(packageData.price),
+        platformFeePercent: Number(packageData.platformFeePercent),
+        active: Boolean(packageData.active),
+      }),
+    });
+  },
+
+  // Xóa gói
+  deletePackage: async (id) => {
+    return await request(`/brokerage-packages/${id}`, {
+      method: 'DELETE',
+    });
+  },
+};
+
+/* ==================== 6. BOOKING & TUTORING ==================== */
+export const bookingApi = {
+  // POST /bookings/me (Tạo đơn thuê gia sư)
+  createBooking: async (packageId) => {
+    return await request('/bookings/me', {
+      method: 'POST',
+      body: JSON.stringify({ packageId }),
+    });
+  },
+
+  // GET /bookings/me (Lấy các đơn đặt lịch của học sinh hiện tại - Page<BookingResponse>)
+  getMyBookings: async (page = 0, size = 10) => {
+    const res = await request(withPagination('/bookings/me', page, size));
+    return extractPageContent(res);
+  },
+
+  // GET /bookings/tutor (Lấy các đơn học viên đặt lịch với gia sư hiện tại)
+  getTutorBookings: async (page = 0, size = 10) => {
+    const res = await request(
+      withPagination('/bookings/tutor', page, size)
+    );
+    return extractPageContent(res);
+  },
+
+  // PATCH /bookings/:id/cancel
+  cancelBooking: async (id) => {
+    return await request(`/bookings/${id}/cancel`, {
+      method: 'PATCH',
+    });
+  },
+
+  // PATCH /bookings/:id/complete (Học viên hoàn thành & giải ngân ký quỹ cho gia sư)
+  completeBooking: async (id) => {
+    return await request(`/bookings/${id}/complete`, {
+      method: 'PATCH',
+    });
+  },
+
+  // GET /bookings/:id (Chi tiết đơn booking)
+  getBooking: async (id) => {
+    return await request(`/bookings/${id}`);
+  },
+};
+
+/* ==================== 7. HEALTH CHECK ==================== */
+export const checkBackendHealth = async () => {
+  try {
+    const res = await fetch(`${BASE_URL}/articles?page=0&size=1`, { method: 'GET' });
+    const contentType = res.headers.get('content-type') || '';
+    return res.ok && contentType.includes('json');
+  } catch {
+    return false;
+  }
+};
+
+/* ==================== 8. CART ==================== */
+export const cartApi = {
+  // GET /cart (Lấy danh sách khóa học trong giỏ hàng - Page<CartItemResponse>)
+  getCart: async (page = 0, size = 10) => {
+    const res = await request(withPagination('/cart', page, size));
+    return extractPageContent(res);
+  },
+
+  // POST /cart (Thêm khóa học vào giỏ hàng)
+  addToCart: async (courseId) => {
+    return await request('/cart', {
+      method: 'POST',
+      body: JSON.stringify({ courseId }),
+    });
+  },
+
+  // DELETE /cart/:courseId (Xóa khóa học khỏi giỏ hàng)
+  removeFromCart: async (courseId) => {
+    return await request(`/cart/${courseId}`, {
+      method: 'DELETE',
+    });
+  },
+
+  // DELETE /cart (Xóa sạch giỏ hàng)
+  clearCart: async () => {
+    return await request('/cart', {
+      method: 'DELETE',
+    });
+  },
+
+  // POST /cart/checkout (Thanh toán & Đăng ký tất cả khóa học trong giỏ)
+  checkout: async () => {
+    return await request('/cart/checkout', {
+      method: 'POST',
+    });
+  },
+};
+
+/* ==================== 9. WISHLIST ==================== */
+export const wishlistApi = {
+  // GET /wishlist (Lấy danh sách yêu thích - Page<WishlistItemResponse>)
+  getWishlist: async (page = 0, size = 10) => {
+    const res = await request(withPagination('/wishlist', page, size));
+    return extractPageContent(res);
+  },
+
+  // POST /wishlist/:courseId (Thêm vào yêu thích)
+  addToWishlist: async (courseId) => {
+    return await request(`/wishlist/${courseId}`, {
+      method: 'POST',
+    });
+  },
+
+  // DELETE /wishlist/:courseId (Xóa khỏi yêu thích)
+  removeFromWishlist: async (courseId) => {
+    return await request(`/wishlist/${courseId}`, {
+      method: 'DELETE',
+    });
+  },
+};
+
+/* ==================== 10. ADMIN MANAGEMENT ==================== */
+export const adminApi = {
+  getTransactionsPage: async (page = 0, size = 10) => {
+    return await request(
+      withPagination('/transactions', page, size)
+    );
+  },
+
+  // GET /users/admin (Lấy danh sách tất cả người dùng - Page<UserResponse>)
+  getAllUsers: async (page = 0, size = 10) => {
+    const res = await request(withPagination('/users/admin', page, size));
+    return extractPageContent(res);
+  },
+
+  // PUT /users/admin/:userId/status (Khóa hoặc Mở khóa tài khoản)
+  updateUserStatus: async (userId, status) => {
+    return await request(`/users/admin/${userId}/status`, {
+      method: 'PUT',
+      body: JSON.stringify({ status }),
+    });
+  },
+
+  getTutorApplications: async (page = 0, size = 10) => {
+    const res = await request(
+      withPagination('/tutor-applications/admin', page, size)
+    );
+    return extractPageContent(res);
+  },
+
+  approveTutorApplication: async (applicationId) => {
+    return await request(
+      `/tutor-applications/admin/${applicationId}/approve`,
+      { method: 'PATCH' }
+    );
+  },
+
+  rejectTutorApplication: async (applicationId) => {
+    return await request(
+      `/tutor-applications/admin/${applicationId}/reject`,
+      { method: 'PATCH' }
+    );
+  },
+
+  // GET /brokerage-packages/admin/get-all (Lấy tất cả gói môi giới - Page<BrokeragePackageResponse>)
+  getAllPackages: async (page = 0, size = 10) => {
+    const res = await request(withPagination('/brokerage-packages/admin/get-all', page, size));
+    return extractPageContent(res);
+  },
+
+  // GET /admin/disputes (Lấy danh sách khiếu nại tranh chấp cho Admin - Page<DisputeResponse>)
+  getDisputes: async (status, page = 0, size = 10) => {
+    const base = status ? `/admin/disputes?status=${status}` : '/admin/disputes';
+    const res = await request(withPagination(base, page, size));
+    return extractPageContent(res);
+  },
+
+  // GET /admin/disputes/:id (Xem chi tiết khiếu nại)
+  getDisputeDetail: async (id) => {
+    return await request(`/admin/disputes/${id}`);
+  },
+
+  // PATCH /admin/disputes/:id/approve (Chấp thuận khiếu nại & hoàn tiền)
+  approveDispute: async (id) => {
+    return await request(`/admin/disputes/${id}/approve`, {
+      method: 'PATCH',
+    });
+  },
+
+  // PATCH /admin/disputes/:id/reject (Từ chối / Bác bỏ khiếu nại)
+  rejectDispute: async (id) => {
+    return await request(`/admin/disputes/${id}/reject`, {
+      method: 'PATCH',
+    });
+  },
+
+  // GET /admin/action-logs (Lấy nhật ký kiểm toán hệ thống - Page<ActionLogResponse>)
+  getActionLogs: async (params = {}) => {
+    const query = new URLSearchParams();
+    const merged = { page: 0, size: 10, ...params };
+    Object.entries(merged).forEach(([key, val]) => {
+      if (val !== undefined && val !== null && val !== '') {
+        query.append(key, val);
+      }
+    });
+    const queryString = query.toString();
+    const res = await request(`/admin/action-logs${queryString ? `?${queryString}` : ''}`);
+    return extractPageContent(res);
+  },
+
+
+  // Lấy danh sách giao dịch thanh toán cho Admin
+  getTransactions: async (params = {}) => {
+    const query = new URLSearchParams();
+
+    const merged = {
+      page: 0,
+      size: 10,
+      ...params
+    };
+
+    Object.entries(merged).forEach(([key, val]) => {
+      if (val !== undefined && val !== null && val !== '') {
+        query.append(key, val);
+      }
+    });
+
+    const queryString = query.toString();
+
+    return await request(
+      `/transactions${queryString ? `?${queryString}` : ''}`
+    );
+  },
+
+  // Lấy đầy đủ metadata phân trang của Action Logs
+  getActionLogsPage: async (params = {}) => {
+    const query = new URLSearchParams();
+
+    const merged = {
+      page: 0,
+      size: 10,
+      ...params
+    };
+
+    Object.entries(merged).forEach(([key, val]) => {
+      if (val !== undefined && val !== null && val !== '') {
+        query.append(key, val);
+      }
+    });
+
+    const queryString = query.toString();
+
+    return await request(
+      `/admin/action-logs${queryString ? `?${queryString}` : ''}`
+    );
+  },
+
+
+  // GET /admin/action-logs/:id
+  getActionLogById: async (id) => {
+    return await request(`/admin/action-logs/${id}`);
+  },
+
+  // GET /admin/withdrawals (Lấy danh sách yêu cầu rút tiền - Page<WithdrawalResponse>)
+  getWithdrawals: async (page = 0, size = 10) => {
+    const res = await request(withPagination('/admin/withdrawals', page, size));
+    return extractPageContent(res);
+  },
+};
+
+/* ==================== 11. WALLET & DEPOSIT ==================== */
+export const walletApi = {
+  // POST /wallets (User tự gọi API tạo ví trên BE Optimize01)
+  createWallet: async (type = 'NORMAL') => {
+    return await request('/wallets', {
+      method: 'POST',
+      body: JSON.stringify({ type }),
+    });
+  },
+
+  // GET /wallets/user (BE Optimize01 trả về Page<WalletResponse>)
+  getMyWallets: async (page = 0, size = 20) => {
+    const res = await request(withPagination('/wallets/user', page, size));
+    return extractPageContent(res);
+  },
+
+  // Lấy ví NORMAL của user hiện tại (trả về null nếu user chưa tạo ví)
+  getMyWallet: async () => {
+    const wallets = await walletApi.getMyWallets();
+    return wallets.find((w) => w.type === 'NORMAL') || wallets[0] || null;
+  },
+
+  // Tương thích các component cũ gọi theo userId -> chuyển sang GET /wallets/user
+  getWalletByUserId: async () => {
+    return await walletApi.getMyWallet();
+  },
+
+  // Đảm bảo user đã có ví trước khi giao dịch (tạo ví NORMAL nếu chưa có)
+  ensureWallet: async (type = 'NORMAL') => {
+    const existing = await walletApi.getMyWallet();
+    if (existing) return existing;
+    return await walletApi.createWallet(type);
+  },
+
+  // GET /wallets/:id
+  getWallet: async (id) => {
+    return await request(`/wallets/${id}`);
+  },
+
+  // POST /wallet/deposits
+  createDeposit: async (amount) => {
+    return await request('/wallet/deposits', {
+      method: 'POST',
+      body: JSON.stringify({ amount: Number(amount) }),
+    });
+  },
+
+  // POST /wallet/deposits/:referenceCode/confirm
+  confirmDeposit: async (referenceCode) => {
+    return await request(`/wallet/deposits/${referenceCode}/confirm`, {
+      method: 'POST',
+    });
+  },
+};
+
+/* ==================== 12. MOCK PAYMENT GATEWAY ==================== */
+export const mockPaymentApi = {
+  // POST /mock-payments/:referenceCode/success
+  simulateSuccess: async (referenceCode) => {
+    return await request(`/mock-payments/${referenceCode}/success`, {
+      method: 'POST',
+    });
+  },
+
+  // POST /mock-payments/:referenceCode/failure
+  simulateFailure: async (referenceCode) => {
+    return await request(`/mock-payments/${referenceCode}/failure`, {
+      method: 'POST',
+    });
+  },
+};
+
+/* ==================== 13. PAYMENT (ESCROW HOLD) ==================== */
+export const paymentApi = {
+  // POST /enrollment-payments/:enrollmentId/payment
+  payForEnrollment: async (enrollmentId) => {
+    return await request(`/enrollment-payments/${enrollmentId}/payment`, {
+      method: 'POST',
+    });
+  },
+
+  // POST /booking-payments/:bookingId/payment
+  payForBooking: async (bookingId) => {
+    return await request(`/booking-payments/${bookingId}/payment`, {
+      method: 'POST',
+    });
+  },
+};
+
+/* ==================== 14. TUTOR APPLICATION API ==================== */
+export const tutorApi = {
+  getTutors: async (page = 0, size = 10) => {
+    // Endpoint này yêu cầu đăng nhập
+    if (!sessionStorage.getItem('token')) {
+      return [];
+    }
+
+    const res = await request(
+      withPagination('/tutor-profiles/admin', page, size)
+    );
+
+    return extractPageContent(res).map((profile) => ({
+      id: profile.userId,
+      userId: profile.userId,
+      displayName:
+        profile.displayName ||
+        profile.userName ||
+        profile.name ||
+        profile.user?.displayName ||
+        profile.tutor?.displayName ||
+        '',
+      avatarUrl: profile.avatarUrl || profile.user?.avatarUrl || '',
+      bio: profile.bio || '',
+      subjectsCanTeach: profile.subjectsCanTeach || '',
+      rating: profile.rating ?? 5,
+    })).filter((tutor) => tutor.id);
+  },
+};
+
+export const tutorApplicationApi = {
+  createApplication: async (data) => {
+    return await request('/tutor-applications', {
+      method: 'POST',
+      body: JSON.stringify({
+        bio: data.bio,
+        subjectsCanTeach: data.subjectsCanTeach,
+        cvUrl: data.cvUrl,
+        testSubmission: data.testSubmission || null,
+      }),
+    });
+  },
+
+  getMyApplication: async () => {
+    return await request('/tutor-applications');
+  },
+
+  deleteMyApplication: async () => {
+    return await request('/tutor-applications', {
+      method: 'DELETE',
+    });
+  },
+};
+
+
+/* ==================== 15. DISPUTE API (STUDENT) ==================== */
+export const disputeApi = {
+  // POST /disputes (Tạo khiếu nại mới)
+  createDispute: async (data) => {
+    return await request('/disputes', {
+      method: 'POST',
+      body: JSON.stringify(data),
+    });
+  },
+
+  // GET /disputes/me (Danh sách khiếu nại của học sinh hiện tại - Page<DisputeResponse>)
+  getMyDisputes: async (page = 0, size = 10) => {
+    const res = await request(withPagination('/disputes/me', page, size));
+    return extractPageContent(res);
+  },
+
+  // GET /disputes/:id (Xem chi tiết khiếu nại)
+  getMyDispute: async (id) => {
+    return await request(`/disputes/${id}`);
+  },
+
+  // PATCH /disputes/:id/cancel (Hủy khiếu nại)
+  cancelDispute: async (id) => {
+    return await request(`/disputes/${id}/cancel`, {
+      method: 'PATCH',
+    });
+  },
+};
+
+export const tutorProfileApi = {
+  getMyProfile: async () => {
+    return await request('/tutor-profiles');
+  },
+
+  updateMyProfile: async (data) => {
+    return await request('/tutor-profiles', {
+      method: 'PATCH',
+      body: JSON.stringify({
+        bio: data.bio,
+        subjectsCanTeach: data.subjectsCanTeach,
+      }),
+    });
+  },
+
+  getAllProfiles: async (page = 0, size = 10) => {
+    const res = await request(
+      withPagination('/tutor-profiles/admin', page, size)
+    );
+    return extractPageContent(res);
+  },
+};
+
+export const withdrawalApi = {
+  createWithdrawal: async (data) => {
+    return await request('/withdrawals', {
+      method: 'POST',
+      body: JSON.stringify({
+        amount: Number(data.amount),
+        bankName: data.bankName,
+        accountNumber: data.accountNumber,
+        accountHolder: data.accountHolder,
+      }),
+    });
+  },
+
+  getMyWithdrawals: async (page = 0, size = 10) => {
+    const res = await request(
+      withPagination('/withdrawals/me', page, size)
+    );
+    return extractPageContent(res);
+  },
+
+  getWithdrawal: async (id) => {
+    return await request(`/withdrawals/${id}`);
+  },
+};
+
+export const reviewApi = {
+  createReview: async (data) => {
+    return await request('/reviews', {
+      method: 'POST',
+      body: JSON.stringify({
+        bookingId: data.bookingId || null,
+        enrollmentId: data.enrollmentId || null,
+        rating: Number(data.rating),
+        comment: data.comment,
+      }),
+    });
+  },
+
+  getTutorReviews: async (page = 0, size = 10) => {
+    const res = await request(
+      withPagination('/reviews/tutor', page, size)
+    );
+    return extractPageContent(res);
+  },
+
+  updateReview: async (data) => {
+    return await request('/reviews', {
+      method: 'PATCH',
+      body: JSON.stringify(data),
+    });
+  },
+
+  deleteReview: async () => {
+    return await request('/reviews', {
+      method: 'DELETE',
+    });
+  },
+};
+
+
+export const lessonApi = {
+  createLesson: async (courseId, data) => {
+    return await request(`/lessons/courses/${courseId}`, {
+      method: 'POST',
+      body: JSON.stringify({
+        title: data.title,
+        mediaUrl: data.mediaUrl || null,
+        meetingUrl: data.meetingUrl || null,
+        startsAt: data.startsAt || null,
+        lessonOrder: Number(data.lessonOrder),
+      }),
+    });
+  },
+
+  getLessons: async (courseId, page = 0, size = 10) => {
+    const res = await request(
+      withPagination(`/lessons/course/${courseId}`, page, size)
+    );
+    return extractPageContent(res);
+  },
+
+  updateLesson: async (id, data) => {
+    return await request(`/lessons/${id}`, {
+      method: 'PATCH',
+      body: JSON.stringify(data),
+    });
+  },
+
+  deleteLesson: async (id) => {
+    return await request(`/lessons/${id}`, {
+      method: 'DELETE',
+    });
+  },
+};
